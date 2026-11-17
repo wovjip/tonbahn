@@ -84,6 +84,10 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
 .trackBtns,.fileBtns{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
 .trackBtns .primary{background:var(--bass);color:var(--bg);border-color:var(--bass);font-weight:500}
 .fileBtns{margin:12px 0 0}
+.fileBtns .quiet{color:var(--muted)}
+.fileHint{color:var(--muted);font-size:13px;margin:12px 0 0 !important}
+#trackList li.flash .rowMain{animation:flash 1.4s ease-out}
+@keyframes flash{0%{background:rgba(243,171,60,0.45)}100%{background:rgba(243,171,60,0.08)}}
 .fileBtns label{font-size:14px;color:var(--text);background:#1f2839;border:1px solid var(--line);border-radius:8px;padding:7px 10px;min-height:36px;display:inline-flex;align-items:center;cursor:pointer}
 .fileBtns label:hover{border-color:#41506b}
 .fileBtns label:focus-within{outline:2px solid var(--melody);outline-offset:2px}
@@ -125,7 +129,7 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
 <div class="app">
   <header>
     <h1>Tonbahn</h1>
-    <span class="ver">v05</span>
+    <span class="ver">v06</span>
     <p class="tag">Notes ride a circular track. Pick a style, then make it yours.</p>
   </header>
 
@@ -176,10 +180,12 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
         </div>
         <ul id="trackList" aria-label="Saved grooves"></ul>
         <p class="empty" id="emptyNote">Nothing saved yet.</p>
+        <p class="fileHint">Export file saves the groove you hear now. Backup all saves every groove in your list.</p>
         <div class="linkBox" id="linkBox"><input id="linkOut" readonly aria-label="Share link"></div>
         <div class="fileBtns">
           <button id="exportBtn">Export file</button>
           <label>Import file<input type="file" id="importFile" accept=".json,application/json" class="sr-only"></label>
+          <button id="backupBtn" class="quiet">Backup all</button>
         </div>
       </section>
       <section class="card">
@@ -1054,7 +1060,7 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
       t.appendChild(b); t.classList.add('act');
     } else t.classList.remove('act');
     t.classList.add('show');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), act ? 6000 : 2800);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), act ? 6000 : Math.max(2800, msg.length * 70));
   }
   /* undo for anything that replaces the current groove */
   function withUndo(msg, action){
@@ -1106,6 +1112,8 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
     initAudio();
     S.cur = {base:t.name, ver:t.ver, type:t.type, status:'saved', baseSig:sig(t.data), prev:null, id:t.id};
     applyData(t.data); renderNow(); markCurrent(); nudgePlay();
+    const li = document.querySelector(`#trackList li[data-id="${t.id}"]`);
+    if (li){ li.classList.remove('flash'); void li.offsetWidth; li.classList.add('flash'); li.scrollIntoView({block:'nearest'}); }
     toast((msg || 'Loaded: ') + fullName(t.name, t.ver) + '. Press play.');
   }
 
@@ -1208,29 +1216,49 @@ h2{font-family:var(--font-display);font-size:18px;margin:0 0 4px;font-weight:500
     toast('Saved: ' + fullName(t.name, t.ver)); track('save');
   });
   $('shareBtn').addEventListener('click', () => shareLink(snapshot(), fullName(S.cur.base, S.cur.ver)));
-  $('exportBtn').addEventListener('click', () => {
-    if (inPreview){ toast('Export works on the published site, not in this preview.'); return; }
-    if (!tracks.length){ toast('Save a groove first.'); return; }
-    const d = new Date(), p = n => String(n).padStart(2, '0');
-    const fname = `${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}_tonbahn_tracks.json`;
-    const blob = new Blob([JSON.stringify({app:'tonbahn', version:2, tracks}, null, 1)], {type:'application/json'});
+  /* files: one groove per file, or a backup of all */
+  const stamp = () => { const d = new Date(), p = n => String(n).padStart(2, '0');
+    return {day:`${String(d.getFullYear()).slice(2)}${p(d.getMonth() + 1)}${p(d.getDate())}`, time:`${p(d.getHours())}${p(d.getMinutes())}`}; };
+  const fileSafe = s => s.replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/Ä/g, 'Ae').replace(/Ö/g, 'Oe').replace(/Ü/g, 'Ue').replace(/ß/g, 'ss')
+    .trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9-]/g, '').replace(/-+/g, '-').slice(0, 40) || 'Groove';
+  function download(obj, fname){
+    const blob = new Blob([JSON.stringify(obj, null, 1)], {type:'application/json'});
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fname;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    toast(`Download started: ${fname}, see your Downloads folder.`); track('export');
+  }
+  $('exportBtn').addEventListener('click', () => {
+    if (inPreview){ toast('Export works on the published site, not in this preview.'); return; }
+    const c = S.cur, saved = c.id && c.status === 'saved' ? tracks.find(t => t.id === c.id) : null;
+    const t = saved || {id:newId(), name:c.base, ver:c.ver, type:c.type, created:Date.now(), data:snapshot()};
+    const fname = `${stamp().day}_${fileSafe(t.name)}_${pad2(t.ver)}.json`;
+    download({app:'tonbahn', version:2, tracks:[t]}, fname);
+    toast(`Download started: ${fname}. Look in your Downloads folder.`); track('export');
+  });
+  $('backupBtn').addEventListener('click', () => {
+    if (inPreview){ toast('Backup works on the published site, not in this preview.'); return; }
+    if (!tracks.length){ toast('Nothing saved yet. Save a groove first.'); return; }
+    const s = stamp(), fname = `${s.day}_${s.time}_tonbahn_backup.json`;
+    download({app:'tonbahn', version:2, tracks}, fname);
+    toast(`Download started: ${fname} with ${tracks.length} groove${tracks.length > 1 ? 's' : ''}. Look in your Downloads folder.`); track('backup');
   });
   $('importFile').addEventListener('change', e => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     f.text().then(txt => {
-      const j = JSON.parse(txt), list = (j && Array.isArray(j.tracks)) ? j.tracks : [];
-      const added = [];
-      list.forEach(t => {
-        if (!t || !validData(t.data) || tracks.some(x => x.id === t.id)) return;
-        const m = migrate(t); m.created = Date.now() - added.length; added.push(m);
+      const j = JSON.parse(txt), list = (j && Array.isArray(j.tracks)) ? j.tracks.filter(t => t && validData(t.data)) : [];
+      if (!list.length){ toast('This file has no Tonbahn grooves in it.'); return; }
+      const added = [], known = [], picked = [];
+      list.forEach(raw => {
+        const m = migrate(raw);
+        const ex = tracks.find(x => x.id === m.id) || tracks.find(x => sig(x.data) === sig(m.data) && x.name === m.name && x.ver === m.ver);
+        if (ex){ known.push(ex); picked.push(ex); }
+        else { m.created = Date.now() - added.length; added.push(m); picked.push(m); }
       });
       tracks = added.concat(tracks); storeTracks(); renderTracks();
-      if (!added.length){ toast('No new grooves in this file.'); return; }
-      loadTrack(added[0], `Imported ${added.length}. Loaded: `);
+      let msg;
+      if (list.length === 1) msg = added.length ? 'Imported: ' : 'Imported, but already in your list: ';
+      else msg = `Imported ${list.length} grooves` + (known.length ? ` (${known.length} already in your list)` : '') + '. Loaded: ';
+      loadTrack(picked[0], msg);
       track('import');
     }).catch(() => toast('This file is not a Tonbahn file.'));
     e.target.value = '';
